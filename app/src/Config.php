@@ -5,12 +5,15 @@ namespace PayLoop;
 
 final class Config
 {
-    // F6: signing secret hard-coded in source and committed to the repository.
-    private const TOKEN_SECRET = 'payloop-dev-secret-2024';
-
+    /** Signing secret comes from the environment (secret manager / orchestrator), never from source. */
     public static function tokenSecret(): string
     {
-        return self::TOKEN_SECRET;
+        $secret = getenv('PAYLOOP_TOKEN_SECRET');
+        if ($secret === false || strlen($secret) < 32) {
+            // Fail closed: refuse to run with a missing or weak secret.
+            throw new \RuntimeException('PAYLOOP_TOKEN_SECRET must be set to at least 32 characters');
+        }
+        return $secret;
     }
 
     public static function tokenTtl(): int
