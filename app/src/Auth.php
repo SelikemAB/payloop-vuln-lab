@@ -24,7 +24,7 @@ final class Auth
             return null;
         }
         [$payload, $sig] = explode('.', $token, 2);
-        if (hash_hmac('sha256', $payload, Config::tokenSecret()) !== $sig) {
+        if (!hash_equals(hash_hmac('sha256', $payload, Config::tokenSecret()), $sig)) {
             Logger::event('auth_token_invalid', ['reason' => 'bad_signature']);
             return null;
         }
