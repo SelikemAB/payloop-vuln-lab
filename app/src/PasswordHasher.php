@@ -5,14 +5,13 @@ namespace PayLoop;
 
 final class PasswordHasher
 {
-    // F5: unsalted MD5 is a fast hash; a stolen table is cracked in seconds.
     public static function hash(string $password): string
     {
-        return md5($password);
+        return password_hash($password, defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_BCRYPT);
     }
 
     public static function verify(string $password, string $hash): bool
     {
-        return md5($password) === $hash;
+        return password_verify($password, $hash);
     }
 }
