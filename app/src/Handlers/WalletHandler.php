@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace PayLoop\Handlers;
 
-use PayLoop\{Auth, Db, HttpException, Logger, Request, Response, Wallets};
+use PayLoop\{Auth, Db, Logger, Request, Response, Wallets};
 
 final class WalletHandler
 {
@@ -12,11 +12,8 @@ final class WalletHandler
         $claims = Auth::requireUser($r);
         $id = (int) ($r->query['id'] ?? 0);
 
-        // F2: authenticated, but any user may read any wallet by changing the id (IDOR).
-        $wallet = Wallets::find($id);
-        if ($wallet === null) {
-            throw new HttpException(404, 'not_found');
-        }
+        // Object-level authorisation: only the owner (or an admin) may read a wallet.
+        $wallet = Wallets::assertAccess($claims, $id);
         $st = Db::pdo()->prepare('SELECT username FROM users WHERE id = ?');
         $st->execute([$wallet['owner_id']]);
         Logger::event('wallet_view', ['wallet_id' => $id]);
