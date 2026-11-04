@@ -1,0 +1,197 @@
+# Single source of truth for the assessment. scripts/gen_docs.py renders FINDINGS.md and the PR drafts from this file
+# and injects real before/after evidence by running the lab. Edit here, never in the generated files.
+findings:
+  - id: F1
+    slug: sql-injection
+    title: SQL injection in statement search
+    severity: Critical
+    cwe: CWE-89
+    owasp: "A03:2021 Injection"
+    attack: ["T1190"]
+    endpoint: "GET /statement?wallet=&q="
+    files: ["src/Handlers/StatementHandler.php"]
+    description: >-
+      The search term q is concatenated into the SQL string. A user who owns any wallet can append a UNION
+      SELECT and read arbitrary tables, including the users table with password hashes.
+    impact: "Full read of the database; combined with F5 the hashes are cracked offline in minutes."
+    repro: |
+      TOKEN=$(curl -s $BASE/login -d '{"username":"alice","password":"alice-demo-pw"}' | jq -r .token)
+      curl -sG $BASE/statement -H "Authorization: Bearer $TOKEN" --data-urlencode "wallet=1" \
+        --data-urlencode "q=zzz%' UNION SELECT id,1,1,1,username||':'||pass_hash,'x' FROM users--"
+    root_cause: "String interpolation of untrusted input into a query; no parameter binding."
+    fix: "Prepared statement with bound parameters. LIKE wildcards in user input are escaped so they match literally; input length capped."
+    ai_note: "Typical AI-suggested fix is correct here (bind parameters). Verify it also handles LIKE wildcards and keeps ORDER BY/LIMIT out of user control."
+    detection:
+      sast: "payloop.php.taint-to-sql"
+      rules: ["110120"]
+      blind_spots: "Regex on the query string misses payloads in JSON bodies and heavily obfuscated/encoded forms. Pair with DB-level audit logging and a WAF."
+  - id: F2
+    slug: idor-wallet
+    title: IDOR on wallet lookup
+    severity: High
+    cwe: CWE-639
+    owasp: "A01:2021 Broken Access Control"
+    attack: ["T1213"]
+    endpoint: "GET /wallet?id="
+    files: ["src/Handlers/WalletHandler.php"]
+    description: "The endpoint authenticates the caller but never checks that the wallet belongs to them. Changing id returns any customer's balance and owner."
+    impact: "Disclosure of every customer's balance and identity; trivially enumerable because ids are sequential."
+    repro: |
+      curl -s "$BASE/wallet?id=2" -H "Authorization: Bearer $ALICE_TOKEN"   # bob's wallet
+    root_cause: "Authentication without object-level authorisation."
+    fix: "Reuse the shared Wallets::assertAccess() guard (owner or admin). Non-owners get 404 so existence is not revealed, and the denial is logged."
+    ai_note: "SAST and many AI reviewers miss this class because the code is 'correct' but incomplete. It was found by reading every handler against the access-control matrix in the threat model."
+    detection:
+      sast: "none (logic flaw)"
+      rules: ["110140", "110141"]
+      blind_spots: "A single targeted read of a guessable id looks like normal traffic; detection relies on enumeration volume. Prevention is the real control."
+  - id: F3
+    slug: path-traversal
+    title: Path traversal in receipt download
+    severity: High
+    cwe: CWE-22
+    owasp: "A01:2021 Broken Access Control"
+    attack: ["T1005"]
+    endpoint: "GET /receipt?file="
+    files: ["src/Handlers/ReceiptHandler.php"]
+    description: "The file parameter is appended to the receipts directory, so ../ sequences read files elsewhere on disk."
+    impact: "Arbitrary file read as the web user: configuration, keys, source."
+    repro: |
+      curl -sG $BASE/receipt -H "Authorization: Bearer $TOKEN" --data-urlencode "file=../internal/notes.txt"
+    root_cause: "No validation of a user-controlled path segment."
+    fix: "Strict allow-list regex on the file name, then realpath() containment check against the receipts directory. Blocked attempts are logged."
+    ai_note: "Check the AI did not just strip '../' (bypassable with ....// or encoding); the allow-list plus realpath combination is the robust pattern."
+    detection:
+      sast: "payloop.php.taint-to-file-path"
+      rules: ["110121", "110122"]
+      blind_spots: "Double-encoded sequences can slip past the request-line regex; the app-level path_blocked event (110122) covers them once the fix is in."
+  - id: F4
+    slug: ssrf-webhook
+    title: SSRF in partner webhook test
+    severity: High
+    cwe: CWE-918
+    owasp: "A10:2021 Server-Side Request Forgery"
+    attack: ["T1190", "T1552.005"]
+    endpoint: "POST /partner/webhook-test"
+    files: ["src/Handlers/WebhookTestHandler.php", "src/SsrfGuard.php (new)"]
+    description: "The server fetches any URL a caller supplies, follows redirects, accepts file:// and returns the response body."
+    impact: "Reach internal services and, in cloud environments, the instance metadata endpoint; read local files."
+    repro: |
+      curl -s $BASE/partner/webhook-test -H "Authorization: Bearer $TOKEN" -d '{"url":"http://127.0.0.1:9000/internal"}'
+    root_cause: "No destination policy on an outbound request made on behalf of a user."
+    fix: >-
+      New SsrfGuard: http/https only, no userinfo or IP literals, ports 80/443, host must be on an allow-list
+      (deny-all by default), every resolved address must be public IPv4 (RFC1918, loopback, link-local, CGNAT and
+      documentation ranges rejected; IPv6 and IPv4-mapped forms rejected outright), connection is pinned to the vetted IP, redirects disabled, response body not reflected.
+    ai_note: "Ask the AI for the bypass list too (DNS rebinding, redirects, decimal/octal IPs, IPv6, userinfo tricks) and turn each into a test. See tests/ssrf_guard_test.php."
+    detection:
+      sast: "payloop.php.taint-to-outbound-request"
+      rules: ["110130", "110131", "110132"]
+      blind_spots: "DNS rebinding is closed by IP pinning, not by detection. Egress filtering at the network layer is the independent backstop."
+  - id: F5
+    slug: password-hashing
+    title: Unsalted MD5 password storage
+    severity: Medium
+    cwe: CWE-328
+    owasp: "A02:2021 Cryptographic Failures"
+    attack: ["T1110"]
+    endpoint: "users.pass_hash"
+    files: ["src/PasswordHasher.php"]
+    description: "Passwords are stored as unsalted MD5, a fast hash that is reversed with rainbow tables or GPU cracking."
+    impact: "Any database read (see F1) becomes mass credential compromise, including reuse on other services."
+    repro: |
+      sqlite3 var/payloop.sqlite "select username, pass_hash from users"   # 32 hex characters each
+    root_cause: "General-purpose hash used where a slow, salted password hash is required."
+    fix: "password_hash() with Argon2id (bcrypt fallback). Existing hashes need a rollout plan, see docs/REMEDIATION-NOTES.md."
+    ai_note: "AI will often suggest bcrypt; accept it if Argon2id is unavailable, but make sure verification uses password_verify() and that migration of existing hashes is addressed."
+    detection:
+      sast: "payloop.php.weak-password-hash"
+      rules: []
+      blind_spots: "No runtime signal. Compensating controls: database access monitoring and credential-stuffing detection (110111)."
+  - id: F6
+    slug: hardcoded-secret
+    title: Hard-coded token signing secret
+    severity: Critical
+    cwe: CWE-798
+    owasp: "A02:2021 Cryptographic Failures"
+    attack: ["T1606", "T1552.001"]
+    endpoint: "Config::tokenSecret()"
+    files: ["src/Config.php", "src/Auth.php"]
+    description: "Session tokens are HMAC-signed with a secret committed to source. Anyone with repository access can mint a token for any user, including admin."
+    impact: "Authentication bypass and privilege escalation; the secret is in every clone, fork and CI log."
+    repro: |
+      python3 - <<'PY'
+      import base64, hmac, hashlib, json, time
+      b = lambda x: base64.urlsafe_b64encode(x).rstrip(b"=").decode()
+      p = b(json.dumps({"sub": 5, "usr": "admin", "role": "admin", "exp": int(time.time()) + 600}).encode())
+      print(p + "." + hmac.new(b"payloop-dev-secret-2024", p.encode(), hashlib.sha256).hexdigest())
+      PY
+      # then: curl -s $BASE/admin/users -H "Authorization: Bearer <printed token>"
+    root_cause: "Secret material stored in source control; token comparison not constant-time."
+    fix: "Secret read from PAYLOOP_TOKEN_SECRET (min 32 chars), application fails closed if absent; hash_equals() for the signature check. Existing secret must be treated as burned and rotated."
+    ai_note: "Fixing the code does not undo the leak: the old value stays in git history. Rotation and history scrubbing are part of the remediation, not optional."
+    detection:
+      sast: "payloop.php.hardcoded-secret, payloop.php.non-constant-time-mac-compare"
+      rules: ["110160", "110161", "110170"]
+      blind_spots: "A token forged with the real secret is cryptographically valid, so no 'invalid token' event is produced. Only behavioural signals (110170 admin access from a new source) remain. This is why the secret must never leak."
+  - id: F7
+    slug: login-throttling
+    title: No login throttling and user enumeration
+    severity: Medium
+    cwe: CWE-307
+    owasp: "A07:2021 Identification and Authentication Failures"
+    attack: ["T1110"]
+    endpoint: "POST /login"
+    files: ["src/Handlers/LoginHandler.php", "src/RateLimiter.php (new)"]
+    description: "Unlimited password guesses are accepted, and the error text differs for unknown users versus wrong passwords."
+    impact: "Online brute force, password spraying and username harvesting."
+    repro: |
+      for i in $(seq 1 50); do curl -s -o /dev/null -w "%{http_code} " $BASE/login -d "{\"username\":\"dave\",\"password\":\"x$i\"}"; done
+    root_cause: "No attempt accounting and verbose authentication errors."
+    fix: "Failure counters per username (5 / 5 min) and per source IP (20 / 5 min) stored in the database, HTTP 429 with Retry-After, one generic error for every failure, dummy hash verification so unknown users take similar time."
+    ai_note: "Check the limiter keys on both identity and source, otherwise spraying across usernames bypasses it. Decide what source IP means behind a proxy (trusted proxy only)."
+    detection:
+      sast: "none (missing control)"
+      rules: ["110101", "110111", "110112", "110103", "110113"]
+      blind_spots: "Low-and-slow attacks below the thresholds and botnet-distributed guessing need longer-window behavioural analytics."
+  - id: F8
+    slug: transfer-integrity
+    title: Transfer integrity (negative amount, overdraft, replay)
+    severity: High
+    cwe: CWE-840
+    owasp: "A04:2021 Insecure Design"
+    attack: ["T1657"]
+    endpoint: "POST /transfer"
+    files: ["src/Handlers/TransferHandler.php"]
+    description: "Amounts are not validated (negative values reverse the direction of the transfer), balances can go below zero, and the Idempotency-Key header is ignored so a retried request pays twice."
+    impact: "Direct financial loss: free money, overdrafts and duplicate payments."
+    repro: |
+      curl -s $BASE/transfer -H "Authorization: Bearer $ALICE_TOKEN" -H "Idempotency-Key: demo-0001" \
+        -d '{"from_wallet":1,"to_wallet":2,"amount_minor":-5000}'
+    root_cause: "Business rules not enforced server-side; no atomicity; client-controlled retries unhandled."
+    fix: "Integer-only, bounded, positive amounts; distinct wallets; mandatory idempotency key with a unique index; BEGIN IMMEDIATE transaction around check and update; insufficient funds rejected; replay returns the original result."
+    ai_note: "This is where AI review is weakest: no scanner has a rule for 'negative amount'. Derive the checks from the threat model (financial theft), then write the exploit test first."
+    detection:
+      sast: "none (business logic)"
+      rules: ["110150", "110153", "110151", "110152"]
+      blind_spots: "Detection after the fact only; money has already moved when 110150 fires on the baseline. Prevention and reconciliation are the primary controls."
+  - id: F9
+    slug: error-disclosure
+    title: Stack traces returned to clients
+    severity: Low
+    cwe: CWE-209
+    owasp: "A05:2021 Security Misconfiguration"
+    attack: ["T1190"]
+    endpoint: "global exception handler"
+    files: ["public/index.php"]
+    description: "Unhandled exceptions return the message, file path, line number and full stack trace to the caller."
+    impact: "Internal paths and code structure help attackers refine other exploits."
+    repro: |
+      curl -s $BASE/login -d '{'
+    root_cause: "Debug-style error output left enabled in the request path."
+    fix: "Client sees a generic error and a request id. Details are logged as an app_error event keyed by the same id. Malformed JSON maps to 400."
+    ai_note: "Low severity, but cheap to fix and it multiplies the value of every other bug. Good example for explaining severity versus exploitability."
+    detection:
+      sast: "payloop.php.exception-detail-to-client"
+      rules: ["110123", "110124", "110180"]
+      blind_spots: "None significant; error bursts are a reliable fuzzing signal."

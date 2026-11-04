@@ -1,0 +1,20 @@
+--- a/src/Handlers/ReceiptHandler.php
++++ b/src/Handlers/ReceiptHandler.php
+@@ -12,9 +12,14 @@
+         Auth::requireUser($r);
+         $file = (string) ($r->query['file'] ?? '');
+ 
+-        // F3: user input is appended to a directory path with no validation (path traversal).
+-        $path = Config::receiptsDir() . '/' . $file;
+-        if (!is_file($path)) {
++        // 1) strict allow-list on the file name, 2) canonical path must stay inside the receipts dir.
++        if (preg_match('/^receipt-[0-9]{1,10}\.txt$/', $file) !== 1) {
++            Logger::event('path_blocked', ['file' => substr($file, 0, 120), 'reason' => 'bad_name']);
++            throw new HttpException(404, 'not_found');
++        }
++        $base = realpath(Config::receiptsDir());
++        $path = $base === false ? false : realpath($base . '/' . $file);
++        if ($path === false || !str_starts_with($path, $base . DIRECTORY_SEPARATOR)) {
+             throw new HttpException(404, 'not_found');
+         }
+         Logger::event('receipt_download', ['file' => $file]);

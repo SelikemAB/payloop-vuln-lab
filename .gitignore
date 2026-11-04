@@ -1,0 +1,5 @@
+build/
+app/var/*.sqlite*
+app/var/log/
+__pycache__/
+*.pyc
