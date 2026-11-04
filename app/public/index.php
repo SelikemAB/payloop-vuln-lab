@@ -39,13 +39,14 @@ try {
     $handler($request);
 } catch (HttpException $e) {
     Response::json($e->status, ['error' => $e->getMessage(), 'rid' => $rid] + $e->extra);
+} catch (\JsonException) {
+    Response::json(400, ['error' => 'invalid_json', 'rid' => $rid]);
 } catch (\Throwable $e) {
-    // F9: raw exception details (message, file, line, stack trace) are returned to the client.
-    Response::json(500, [
-        'error' => $e->getMessage(),
-        'type'  => get_class($e),
-        'file'  => $e->getFile(),
-        'line'  => $e->getLine(),
-        'trace' => $e->getTraceAsString(),
+    // Details go to the log (correlated by request id); the client only ever sees a generic error.
+    Logger::event('app_error', [
+        'type'    => get_class($e),
+        'message' => substr($e->getMessage(), 0, 300),
+        'where'   => basename($e->getFile()) . ':' . $e->getLine(),
     ]);
+    Response::json(500, ['error' => 'internal_error', 'rid' => $rid]);
 }
