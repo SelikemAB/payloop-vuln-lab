@@ -65,7 +65,7 @@ scripts/make-pr-branches.sh   turns patches into PR-style branches in your own r
   (caught by `patch_matrix`), a Wazuh rule that never fired because a sibling rule matched first, and an SSRF filter bypass through
   IPv4-mapped IPv6 (caught by the guard tests). That is the argument for keeping exploits and detections as executable tests.
 - **Detection is not prevention.** Rule 110150 fires after money moved on the baseline. The fixes are the control; the rules are the net.
-- **Wazuh rules are simulator-verified, not engine-verified.** Follow [`docs/WAZUH-VALIDATION.md`](docs/WAZUH-VALIDATION.md) on a real manager before relying on them.
+- **Wazuh rules are engine-verified.** Validated on a real Wazuh 4.12 manager with `wazuh-logtest` (2026-11-11): this found and fixed two defects the offline simulator missed - rule 110123 used a reserved static field name, and the srcip frequency rules used `same_field` instead of `same_source_ip` so they never correlated. Transcript and details in [`docs/WAZUH-VALIDATION.md`](docs/WAZUH-VALIDATION.md).
 
 ## Interview walk-through (about 8 minutes)
 1. `make baseline`: show the nine exploits succeeding. Explain one end to end (F1 or F8).
