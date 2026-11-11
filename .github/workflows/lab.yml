@@ -29,7 +29,7 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          F=$(printf '%s' "$HEAD_REF" | grep -oiE 'f[0-9]+' | head -1 | tr 'a-z' 'A-Z')
+          F=$(printf '%s' "$HEAD_REF" | grep -oiE 'f[0-9]+' | head -1 | tr '[:lower:]' '[:upper:]')
           test -n "$F" || { echo "could not derive a finding id from branch '$HEAD_REF'"; exit 1; }
           echo "Branch '$HEAD_REF' fixes $F; asserting $F is mitigated on this branch."
           python3 tests/lab.py --app app --only "$F" --expect mitigated
